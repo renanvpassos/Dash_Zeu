@@ -1,0 +1,9 @@
+streamlit>=1.30.0
+pandas>=2.0.0
+fpdf2>=2.7.0
+google-api-python-client>=2.100.0
+google-auth>=2.20.0
+supabase
+streamlit-autorefresh
+requests
+gspread
