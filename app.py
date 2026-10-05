@@ -248,7 +248,7 @@ def get_existing_signatures_for_sheet(sheet_name: str, start_date: date, end_dat
     """
     try:
         response = (
-            supabase.table("atividades_diversos")
+            supabase.table("atividades_eliseu")
             .select("timestamp, referencia, digitador, mensagem")
             .eq("sheet_name", sheet_name)
             .gte("date", start_date.isoformat())
@@ -271,7 +271,7 @@ def add_log_entries_bulk(logs_list):
     for i in range(0, len(logs_list), chunk_size):
         chunk = logs_list[i : i + chunk_size]
         try:
-            supabase.table("atividades_diversos").insert(chunk).execute()
+            supabase.table("atividades_eliseu").insert(chunk).execute()
         except Exception as e:
             st.error(f"Erro ao salvar lote de registros no Supabase: {e}")
 
