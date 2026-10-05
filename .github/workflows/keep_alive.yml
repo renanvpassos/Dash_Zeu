@@ -1,0 +1,44 @@
+name: Keep Streamlit Alive
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Acordar o app Streamlit
+        run: |
+          python - <<'EOF'
+          from playwright.sync_api import sync_playwright
+
+          URL = "https://dash-eliseu.streamlit.app"
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto(URL, wait_until="networkidle", timeout=30000)
+
+              # Se o app estiver dormindo, aparece um botão de "wake up"
+              try:
+                  botao = page.get_by_text("Yes, get this app back up!", exact=False)
+                  if botao.is_visible(timeout=3000):
+                      botao.click()
+                      page.wait_for_timeout(15000)  # espera o app subir
+              except Exception:
+                  pass
+
+              browser.close()
+          EOF
