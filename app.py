@@ -225,7 +225,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def load_logs_by_period(start_date: date, end_date: date):
     try:
         response = (
-            supabase.table("atividades_diversos")
+            supabase.table("atividades_eliseu")
             .select("*")
             .gte("date", start_date.isoformat())
             .lte("date", end_date.isoformat())
