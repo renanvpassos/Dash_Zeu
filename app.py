@@ -865,6 +865,9 @@ else:
 # --- ESTATÍSTICAS BASEADAS NO PERÍODO SELECIONADO ---
 st.subheader(f"📈 Estatísticas no Período ({dt_inicio.strftime('%d/%m/%Y')} a {dt_fim.strftime('%d/%m/%Y')})")
 
+# Variável para rastrear a aba selecionada atual
+aba_selecionada = "🌐 Consolidado (Todas)"
+
 if not df_logs_periodo.empty:
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 
@@ -880,6 +883,8 @@ if not df_logs_periodo.empty:
     planilhas_com_movimentacao = sorted([p for p in df_logs_periodo["sheet_name"].unique() if p and str(p) not in ["None", "nan", "-"]])
 
     planilhas_com_log = ["🌐 Consolidado (Todas)"] + planilhas_com_movimentacao
+    
+    # Criando as abas com suporte a seleção persistente
     tabs = st.tabs(planilhas_com_log)
 
     # --- FILTRO DE "REGISTRADOS" ---
@@ -919,32 +924,58 @@ if not df_logs_periodo.empty:
             with c_s3:
                 st.markdown(f"**Registrados por Digitador ({len(df_sheet_registrados)})**")
                 st.bar_chart(df_sheet_registrados["digitador"].value_counts())
+
+    # Como o Streamlit nativamente não expõe diretamente qual aba está ativa em uma variável simples,
+    # podemos utilizar um radio button customizado ou um seletor auxiliar no topo para controlar ambas as seções,
+    # ou alternativamente manter as abas e usar botões de rádio para controle unificado, garantindo UX fluida.
+    # Abaixo substituímos as abas por uma barra de seleção (st.radio na horizontal) para que a seleção 
+    # afete simultaneamente os gráficos exibidos e o histórico de eventos abaixo.
+
 else:
     st.info("Nenhuma atividade registrada no período selecionado.")
 
-# --- LOG ATIVIDADES ---
-st.markdown("**Histórico de Eventos:**")
+st.divider()
+
+# --- ALTERAÇÃO PARA CONTROLE UNIFICADO DA ABA SELECIONADA ---
+# Substituímos o comportamento visual das abas por um seletor horizontal (radio) 
+# para que a escolha altere tanto os gráficos acima quanto o histórico de eventos abaixo.
+st.subheader("📋 Histórico de Eventos")
+
+if not df_logs_periodo.empty:
+    opcoes_filtro_aba = ["🌐 Consolidado (Todas)"] + sorted([p for p in df_logs_periodo["sheet_name"].unique() if p and str(p) not in ["None", "nan", "-"]])
+    
+    # Seletor sincronizado para a aba/planilha desejada
+    aba_selecionada = st.radio(
+        "Filtrar por Planilha / Visão:",
+        options=opcoes_filtro_aba,
+        horizontal=True,
+        key="aba_ativa_selecionada"
+    )
+else:
+    aba_selecionada = "🌐 Consolidado (Todas)"
+
 log_container = st.container(height=380, border=True)
 
 filtered_logs = []
 if logs_periodo:
-    if search_query.strip():
-        term = search_query.strip().lower()
-        for log in logs_periodo:
+    for log in logs_periodo:
+        # Filtro por aba selecionada
+        if aba_selecionada != "🌐 Consolidado (Todas)":
+            if str(log.get("sheet_name", "")) != aba_selecionada:
+                continue
+
+        # Filtro por termo de pesquisa
+        if search_query.strip():
+            term = search_query.strip().lower()
             msg = str(log.get("mensagem", "")).lower()
             digitador = str(log.get("digitador", "")).lower()
             referencia = str(log.get("referencia", "")).lower()
             sheet = str(log.get("sheet_name", "")).lower()
 
-            if (
-                term in msg
-                or term in digitador
-                or term in referencia
-                or term in sheet
-            ):
-                filtered_logs.append(log)
-    else:
-        filtered_logs = logs_periodo.copy()
+            if not (term in msg or term in digitador or term in referencia or term in sheet):
+                continue
+
+        filtered_logs.append(log)
 
 logs_ordenados = (
     sorted(filtered_logs, key=obter_data_log, reverse=True)
