@@ -274,16 +274,9 @@ def load_logs_by_period(start_date: date, end_date: date, version: int):
             .order("id", desc=True)
         )
     except Exception as e:
-        # Não deixa o erro ficar preso no cache: lança para o chamador tratar.
         raise RuntimeError(f"Erro ao buscar logs do Supabase: {e}")
 
 def get_existing_signatures_for_sheet(sheet_name: str, start_date: date, end_date: date) -> Counter:
-    """Busca APENAS os registros do período já salvos para esta planilha e retorna a
-    CONTAGEM de cada combinação timestamp+mensagem (permite duplicatas reais, mas
-    evita reinserir o que já existe).
-
-    IMPORTANTE: em caso de erro, a exceção é propagada (antes retornava Counter vazio,
-    o que fazia a planilha inteira ser reinserida e duplicada)."""
     data = _paginate(
         lambda: supabase.table("atividades_eliseu")
         .select("id, timestamp, mensagem")
@@ -295,7 +288,6 @@ def get_existing_signatures_for_sheet(sheet_name: str, start_date: date, end_dat
     return Counter(f"{row.get('timestamp', '')}_{row.get('mensagem', '')}" for row in data)
 
 def add_log_entries_bulk(logs_list) -> list:
-    """Insere em lotes. Retorna lista de mensagens de erro (não usa st.* pois roda em thread)."""
     erros = []
     if not logs_list:
         return erros
@@ -353,10 +345,8 @@ def process_single_sheet_update(sheet_name, uploaded_df, start_date: date, end_d
         )
         return False, erro
 
-    # Garante que TODAS as colunas fiquem como string antes de qualquer .strip()
     uploaded_df = uploaded_df.fillna("-").astype(str)
 
-    # --- FILTRO POR PERÍODO SELECIONADO ---
     datas_parseadas = pd.to_datetime(
         uploaded_df["DATA ATUALIZAÇÃO"], dayfirst=True, errors="coerce"
     ).dt.date
@@ -366,9 +356,7 @@ def process_single_sheet_update(sheet_name, uploaded_df, start_date: date, end_d
     if uploaded_df.empty:
         return True, None
 
-    # Contagem de assinaturas já existentes no banco, restrita ao mesmo período
     existing_counts = get_existing_signatures_for_sheet(sheet_name, start_date, end_date)
-    # Contagem do que já foi processado nesta própria leitura da planilha
     used_counts = Counter()
 
     new_logs = []
@@ -395,12 +383,9 @@ def process_single_sheet_update(sheet_name, uploaded_df, start_date: date, end_d
             f"Ação: {observacao} — Referência: {ref}"
         )
 
-        # Chave de deduplicação: timestamp completo + mensagem
         sig_key = f"{data_atualizacao}_{msg_log}"
-
         used_counts[sig_key] += 1
 
-        # Só insere se ainda não temos no banco tantas cópias quanto já vimos na planilha.
         if used_counts[sig_key] > existing_counts.get(sig_key, 0):
             try:
                 dt_obj = pd.to_datetime(data_atualizacao, dayfirst=True, errors="coerce")
@@ -431,8 +416,6 @@ def process_single_sheet_update(sheet_name, uploaded_df, start_date: date, end_d
 # LEITURA DE PLANILHA VIA GOOGLE SHEETS API
 # ==========================================
 def fetch_and_process_sheet(name, sheet_id, token, start_date: date, end_date: date):
-    """Lê a aba LOG via API do Google Sheets v4 e só processa/insere no Supabase
-    as linhas dentro do período selecionado. Roda em thread: NÃO usa st.*."""
     try:
         range_ = f"{NOME_ABA_LOG}"
         url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{range_}"
@@ -466,8 +449,6 @@ def fetch_and_process_sheet(name, sheet_id, token, start_date: date, end_date: d
         return False, f"❌ Erro inesperado ao processar '{name}': {e}"
 
 def executar_sincronizacao(start_date: date, end_date: date, token: str):
-    """Sincroniza todas as planilhas em paralelo. Retorna (sucessos, lista_de_erros).
-    Não usa st.* — pode rodar em thread de segundo plano."""
     sucessos = 0
     erros = []
 
@@ -490,10 +471,9 @@ def executar_sincronizacao(start_date: date, end_date: date, token: str):
     return sucessos, erros
 
 # ==========================================
-# ORQUESTRAÇÃO DA SINCRONIZAÇÃO COM CACHE (TTL + SEM CONCORRÊNCIA)
+# ORQUESTRAÇÃO DA SINCRONIZAÇÃO COM CACHE
 # ==========================================
 def _run_sync_job(key, token, state):
-    """Executa uma sincronização e publica o resultado no estado compartilhado."""
     start_date, end_date = key
     try:
         _, erros = executar_sincronizacao(start_date, end_date, token)
@@ -504,9 +484,8 @@ def _run_sync_job(key, token, state):
         state["last_sync"][key] = time.time()
         state["errors"][key] = erros
         state["running"].discard(key)
-        state["version"] += 1  # invalida o cache de leitura
+        state["version"] += 1
 
-        # Limpa períodos antigos para o dicionário não crescer indefinidamente
         if len(state["last_sync"]) > 50:
             mais_antigos = sorted(state["last_sync"], key=state["last_sync"].get)[:-50]
             for k in mais_antigos:
@@ -514,17 +493,6 @@ def _run_sync_job(key, token, state):
                 state["errors"].pop(k, None)
 
 def garantir_sincronizacao(start_date: date, end_date: date):
-    """Garante que o período esteja sincronizado, sem travar a tela:
-
-    - Cache com TTL: se o período foi sincronizado há menos de SYNC_TTL_SECONDS,
-      nada é feito (interações do usuário não disparam nova sincronização).
-    - Sem concorrência: um mesmo período nunca é sincronizado por duas sessões/reruns
-      ao mesmo tempo (evita duplicatas e sobrecarga no Supabase).
-    - Primeira vez do período: sincroniza na hora (com spinner) para a tela já abrir com dados.
-    - Demais vezes: sincroniza em SEGUNDO PLANO e a tela renderiza imediatamente com o que
-      já está no banco. O refresh seguinte já mostra os dados novos. Assim o rerun do
-      autorefresh nunca é interrompido por uma sincronização lenta.
-    """
     state = get_sync_state()
     key = (start_date, end_date)
 
@@ -541,7 +509,7 @@ def garantir_sincronizacao(start_date: date, end_date: date):
         return
 
     try:
-        token = get_google_access_token()  # na thread principal (usa st.*)
+        token = get_google_access_token()
     except BaseException:
         with state["lock"]:
             state["running"].discard(key)
@@ -693,8 +661,6 @@ def obter_data_log(entry):
 
 @st.cache_data(show_spinner=False, max_entries=5)
 def gerar_pdf_cache(start_date: date, end_date: date, version: int) -> bytes:
-    """O PDF só é regerado quando o período ou os dados mudam (version),
-    e não a cada rerun do autorefresh."""
     logs = load_logs_by_period(start_date, end_date, version)
     logs_ordenados_pdf = sorted(logs, key=obter_data_log, reverse=True)
     return generate_pdf(logs_ordenados_pdf, start_date, end_date)
@@ -739,7 +705,7 @@ if st.session_state["dt_inicio"] > st.session_state["dt_fim"]:
     st.warning("⚠️ A Data Inicial é maior que a Data Final. Ajuste o período.")
 
 # ==========================================
-# SINCRONIZAÇÃO (CACHE TTL + EXECUÇÃO EM SEGUNDO PLANO)
+# SINCRONIZAÇÃO
 # ==========================================
 if st.session_state["dt_inicio"] <= st.session_state["dt_fim"]:
     garantir_sincronizacao(st.session_state["dt_inicio"], st.session_state["dt_fim"])
@@ -804,7 +770,7 @@ if _ultima:
 elif _em_andamento:
     st.caption("🔄 Sincronizando pela primeira vez...")
 
-# --- CARREGA LOGS DO BANCO (CACHE POR PERÍODO + VERSÃO) ---
+# --- CARREGA LOGS DO BANCO ---
 if dt_inicio > dt_fim:
     st.stop()
 
@@ -862,10 +828,12 @@ if not df_logs_periodo.empty:
 else:
     df_acoes_filtradas = pd.DataFrame(columns=["sheet_name", "digitador", "referencia"])
 
-# --- ESTATÍSTICAS BASEADAS NO PERÍODO SELECIONADO ---
+# ==========================================
+# ESTATÍSTICAS E SELETOR UNIFICADO DE VISÃO
+# ==========================================
 st.subheader(f"📈 Estatísticas no Período ({dt_inicio.strftime('%d/%m/%Y')} a {dt_fim.strftime('%d/%m/%Y')})")
 
-# Variável para rastrear a aba selecionada atual
+# Variável padrão da aba/visão selecionada
 aba_selecionada = "🌐 Consolidado (Todas)"
 
 if not df_logs_periodo.empty:
@@ -881,11 +849,15 @@ if not df_logs_periodo.empty:
     col_m4.metric("Registrados", total_registrados)
 
     planilhas_com_movimentacao = sorted([p for p in df_logs_periodo["sheet_name"].unique() if p and str(p) not in ["None", "nan", "-"]])
-
     planilhas_com_log = ["🌐 Consolidado (Todas)"] + planilhas_com_movimentacao
-    
-    # Criando as abas com suporte a seleção persistente
-    tabs = st.tabs(planilhas_com_log)
+
+    # Seletor unificado simulando as abas e controlando simultaneamente estatísticas e histórico
+    aba_selecionada = st.radio(
+        "Selecione a Visão / Planilha para Estatísticas:",
+        options=planilhas_com_log,
+        horizontal=True,
+        key="aba_estatisticas_ativa"
+    )
 
     # --- FILTRO DE "REGISTRADOS" ---
     if "mensagem" in df_acoes_filtradas.columns:
@@ -895,8 +867,8 @@ if not df_logs_periodo.empty:
     else:
         df_registrados_filtradas = pd.DataFrame(columns=df_acoes_filtradas.columns)
 
-    # --- ABA CONSOLIDADO ---
-    with tabs[0]:
+    # Renderiza os gráficos de acordo com a seleção unificada
+    if aba_selecionada == "🌐 Consolidado (Todas)":
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("**Atividades por Digitador (Geral)**")
@@ -907,64 +879,40 @@ if not df_logs_periodo.empty:
         with c3:
             st.markdown(f"**Registrados por Digitador ({len(df_registrados_filtradas)})**")
             st.bar_chart(df_registrados_filtradas["digitador"].value_counts())
+    else:
+        df_sheet_logs = df_acoes_filtradas[df_acoes_filtradas["sheet_name"] == aba_selecionada]
+        df_sheet_registrados = df_registrados_filtradas[df_registrados_filtradas["sheet_name"] == aba_selecionada]
 
-    # --- ABAS INDIVIDUAIS ---
-    for idx, sheet_key in enumerate(planilhas_com_movimentacao, start=1):
-        with tabs[idx]:
-            df_sheet_logs = df_acoes_filtradas[df_acoes_filtradas["sheet_name"] == sheet_key]
-            df_sheet_registrados = df_registrados_filtradas[df_registrados_filtradas["sheet_name"] == sheet_key]
-
-            c_s1, c_s2, c_s3 = st.columns(3)
-            with c_s1:
-                st.markdown("**Atividades por Digitador**")
-                st.bar_chart(df_sheet_logs["digitador"].value_counts())
-            with c_s2:
-                st.markdown("**Ações mais Frequentes**")
-                st.bar_chart(df_sheet_logs["referencia"].value_counts().head(10))
-            with c_s3:
-                st.markdown(f"**Registrados por Digitador ({len(df_sheet_registrados)})**")
-                st.bar_chart(df_sheet_registrados["digitador"].value_counts())
-
-    # Como o Streamlit nativamente não expõe diretamente qual aba está ativa em uma variável simples,
-    # podemos utilizar um radio button customizado ou um seletor auxiliar no topo para controlar ambas as seções,
-    # ou alternativamente manter as abas e usar botões de rádio para controle unificado, garantindo UX fluida.
-    # Abaixo substituímos as abas por uma barra de seleção (st.radio na horizontal) para que a seleção 
-    # afete simultaneamente os gráficos exibidos e o histórico de eventos abaixo.
-
+        c_s1, c_s2, c_s3 = st.columns(3)
+        with c_s1:
+            st.markdown("**Atividades por Digitador**")
+            st.bar_chart(df_sheet_logs["digitador"].value_counts())
+        with c_s2:
+            st.markdown("**Ações mais Frequentes**")
+            st.bar_chart(df_sheet_logs["referencia"].value_counts().head(10))
+        with c_s3:
+            st.markdown(f"**Registrados por Digitador ({len(df_sheet_registrados)})**")
+            st.bar_chart(df_sheet_registrados["digitador"].value_counts())
 else:
     st.info("Nenhuma atividade registrada no período selecionado.")
 
 st.divider()
 
-# --- ALTERAÇÃO PARA CONTROLE UNIFICADO DA ABA SELECIONADA ---
-# Substituímos o comportamento visual das abas por um seletor horizontal (radio) 
-# para que a escolha altere tanto os gráficos acima quanto o histórico de eventos abaixo.
-st.subheader("📋 Histórico de Eventos")
-
-if not df_logs_periodo.empty:
-    opcoes_filtro_aba = ["🌐 Consolidado (Todas)"] + sorted([p for p in df_logs_periodo["sheet_name"].unique() if p and str(p) not in ["None", "nan", "-"]])
-    
-    # Seletor sincronizado para a aba/planilha desejada
-    aba_selecionada = st.radio(
-        "Filtrar por Planilha / Visão:",
-        options=opcoes_filtro_aba,
-        horizontal=True,
-        key="aba_ativa_selecionada"
-    )
-else:
-    aba_selecionada = "🌐 Consolidado (Todas)"
-
+# ==========================================
+# HISTÓRICO DE EVENTOS (SINCRONIZADO)
+# ==========================================
+st.markdown("**Histórico de Eventos:**")
 log_container = st.container(height=380, border=True)
 
 filtered_logs = []
 if logs_periodo:
     for log in logs_periodo:
-        # Filtro por aba selecionada
+        # Aplicação automática do filtro da aba selecionada nas estatísticas
         if aba_selecionada != "🌐 Consolidado (Todas)":
             if str(log.get("sheet_name", "")) != aba_selecionada:
                 continue
 
-        # Filtro por termo de pesquisa
+        # Filtro por termo de pesquisa digitado
         if search_query.strip():
             term = search_query.strip().lower()
             msg = str(log.get("mensagem", "")).lower()
