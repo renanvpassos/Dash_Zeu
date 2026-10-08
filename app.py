@@ -837,7 +837,8 @@ st.subheader(f"📈 Estatísticas no Período ({dt_inicio.strftime('%d/%m/%Y')} 
 aba_selecionada = "🌐 Consolidado (Todas)"
 
 if not df_logs_periodo.empty:
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    # Alterado para 5 colunas para acomodar os "DOCS OK"
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 
     col_m1.metric("Ações Registradas no Período", total_acoes_agrupadas)
     col_m2.metric("Digitadores Ativos", df_logs_periodo["digitador"].nunique())
@@ -847,6 +848,12 @@ if not df_logs_periodo.empty:
         df_logs_periodo["mensagem"].str.contains("REGISTRADO", case=False, na=False).sum()
     )
     col_m4.metric("Registrados", total_registrados)
+
+    # Nova métrica para DOCS OK
+    total_docs_ok = int(
+        df_logs_periodo["mensagem"].str.contains("DOCS OK", case=False, na=False).sum()
+    )
+    col_m5.metric("DOCS OK", total_docs_ok)
 
     planilhas_com_movimentacao = sorted([p for p in df_logs_periodo["sheet_name"].unique() if p and str(p) not in ["None", "nan", "-"]])
     planilhas_com_log = ["🌐 Consolidado (Todas)"] + planilhas_com_movimentacao
@@ -866,6 +873,14 @@ if not df_logs_periodo.empty:
         ]
     else:
         df_registrados_filtradas = pd.DataFrame(columns=df_acoes_filtradas.columns)
+
+    # --- FILTRO DE "DOCS OK" ---
+    if "mensagem" in df_acoes_filtradas.columns:
+        df_docs_ok_filtradas = df_acoes_filtradas[
+            df_acoes_filtradas["mensagem"].str.contains("DOCS OK", case=False, na=False)
+        ]
+    else:
+        df_docs_ok_filtradas = pd.DataFrame(columns=df_acoes_filtradas.columns)
 
     # Renderiza os gráficos de acordo com a seleção unificada
     if aba_selecionada == "🌐 Consolidado (Todas)":
